@@ -23,7 +23,6 @@ import (
     "net/http"
     "fmt"
     "math"
-    "os"
     "os/exec"
     "regexp"
     "strconv"
@@ -284,16 +283,14 @@ func genmetrics(hpinfo []byte ) [][]string {
     return labels
     }
 
-func GetHPInfo() []byte {
+
+func GetHPInfo() ([]byte, error) {
     var (
         hpinfo []byte
         err error
     )
-    if hpinfo, err = exec.Command(*cmdName, cmdArgs...).Output(); err != nil {
-	fmt.Fprintln(os.Stderr, "There was an error in running hpssacli command ", err)
-	os.Exit(1)
-    }
-    return hpinfo
+    hpinfo, err = exec.Command(*cmdName, cmdArgs...).Output()
+    return hpinfo, err
 }
 
 // prometheus part
@@ -313,16 +310,25 @@ func (c collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c collector) Collect(ch chan <- prometheus.Metric) {
-    hpinfo := GetHPInfo()
-    labels := genmetrics(hpinfo)
-    for _, label := range labels {
-        ch <- prometheus.MustNewConstMetric(
+    hpinfo, err := GetHPInfo()
+    if err != nil {
+	ch <- prometheus.MustNewConstMetric(
 	    hpraidDesc,
 	    prometheus.GaugeValue,
-	    1,
-	    label[0], label[1], label[2], label[3],
-    )
-    }
+	    0,
+	    "NULL", "NULL", "NULL", "NULL",
+	)
+    }	else {
+	    labels := genmetrics(hpinfo)
+	    for _, label := range labels {
+    	        ch <- prometheus.MustNewConstMetric(
+	    	    hpraidDesc,
+		    prometheus.GaugeValue,
+		    1,
+		    label[0], label[1], label[2], label[3],
+	    )
+	}
+      }
 }
 
 func main() {
