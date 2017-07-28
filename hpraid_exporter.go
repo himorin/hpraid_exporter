@@ -297,7 +297,7 @@ func GetHPInfo() ([]byte, error) {
 // prometheus part
 var (
     hpraidDesc    = prometheus.NewDesc(
-    "hpraid",
+    "hpraid_diskstate",
     "hpraid disk state",
     []string{"controller", "array","drive_describe","drive_status"}, nil,
     )
