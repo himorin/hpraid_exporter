@@ -23,6 +23,7 @@ import (
     "net/http"
     "fmt"
     "math"
+    "os"
     "os/exec"
     "regexp"
     "strconv"
@@ -312,6 +313,7 @@ func (c collector) Describe(ch chan<- *prometheus.Desc) {
 func (c collector) Collect(ch chan <- prometheus.Metric) {
     hpinfo, err := GetHPInfo()
     if err != nil {
+	fmt.Fprintln(os.Stderr, "There was an error in running hpssacli command ", err)
 	ch <- prometheus.MustNewConstMetric(
 	    hpraidDesc,
 	    prometheus.GaugeValue,
