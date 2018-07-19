@@ -14,57 +14,56 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
-
 package main
 
 import (
-    "flag"
-    "log"
-    "net/http"
-    "fmt"
-    "math"
-    "os"
-    "os/exec"
-    "regexp"
-    "strconv"
-    "strings"
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
+	"flag"
+	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"log"
+	"math"
+	"net/http"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 )
 
 var (
-    port     = flag.String("port", ":9327", "port to expose /metrics on")
-    cmdName = flag.String("cmd", "hpssacli", "command, that shows hpraid stats")
-    cmdArgs = []string{"ctrl", "all", "show", "config"}
+	port    = flag.String("port", ":9327", "port to expose /metrics on")
+	cmdName = flag.String("cmd", "hpssacli", "command, that shows hpraid stats")
+	cmdArgs = []string{"ctrl", "all", "show", "config"}
 )
 
 type Controller struct {
-    Name         string
-    Type         string
-    Slot         uint
-    SerialNumber string
-    Arrays       []Array
-    CurrentArray *Array
+	Name         string
+	Type         string
+	Slot         uint
+	SerialNumber string
+	Arrays       []Array
+	CurrentArray *Array
 }
 
 type Array struct {
-    Id          rune
-    Type        string
-    UnusedSpace uint64
-    Drives      []Drive
+	Id          rune
+	Type        string
+	UnusedSpace uint64
+	Drives      []Drive
 }
 
 type Drive struct {
-    Id       string // index or port:box:bay id, might be redundant
-    RaidMode string
-    Status   string
-    Size     uint64
-    Physical bool
-    // below properties are set only for physical drives
-    Type string
-    Port string
-    Box  uint
-    Bay  uint
+	Id       string // index or port:box:bay id, might be redundant
+	RaidMode string
+	Status   string
+	Size     uint64
+	Physical bool
+	// below properties are set only for physical drives
+	Type string
+	Port string
+	Box  uint
+	Bay  uint
 }
 
 var ctlRx *regexp.Regexp = regexp.MustCompile("^(.*?) in Slot (\\d+)(.*?)\\(sn: ([^\\)]+)\\)$")
@@ -74,280 +73,279 @@ var logRx *regexp.Regexp = regexp.MustCompile("^(\\d+)\\s+\\(([^,]+),\\s+([^,]+)
 var physRx *regexp.Regexp = regexp.MustCompile("^([^\\s]+)\\s+\\(port\\s+([^:]+):box\\s+([^:]+):bay\\s+(\\d+),\\s+([^,]+),\\s+([^,]+),\\s+([^\\)]+)\\)$")
 
 func (ctl *Controller) Describe() string {
-    return fmt.Sprintf("%s in slot %d", ctl.Name, ctl.Slot)
+	return fmt.Sprintf("%s in slot %d", ctl.Name, ctl.Slot)
 }
 
 func (arr *Array) Describe() string {
-    return fmt.Sprintf("%c (%s)", arr.Id, arr.Type)
+	return fmt.Sprintf("%c (%s)", arr.Id, arr.Type)
 }
 
 func logn(n, b float64) float64 {
-    return math.Log(n) / math.Log(b)
+	return math.Log(n) / math.Log(b)
 }
 
 // this function comes from https://github.com/dustin/go-humanize/blob/master/bytes.go
 // under MIT license
 func convertBytesToHumanReadable(s uint64) string {
-    base := float64(1000)
+	base := float64(1000)
 
-    sizes := []string{"", "KB", "MB", "GB", "TB", "PB", "EB"}
-    if s < 10 {
-	return fmt.Sprintf("%d", s)
-    }
-    e := math.Floor(logn(float64(s), base))
-    suffix := sizes[int(e)]
-    val := math.Floor(float64(s)/math.Pow(base, e)*10+0.5) / 10
-    f := "%.0f%s"
-    if val < 10 {
-	f = "%.1f%s"
-    }
-    return fmt.Sprintf(f, val, suffix)
+	sizes := []string{"", "KB", "MB", "GB", "TB", "PB", "EB"}
+	if s < 10 {
+		return fmt.Sprintf("%d", s)
+	}
+	e := math.Floor(logn(float64(s), base))
+	suffix := sizes[int(e)]
+	val := math.Floor(float64(s)/math.Pow(base, e)*10+0.5) / 10
+	f := "%.0f%s"
+	if val < 10 {
+		f = "%.1f%s"
+	}
+	return fmt.Sprintf(f, val, suffix)
 }
 
 func (d *Drive) Describe() string {
-    var driveType, mode string
-    if d.Physical {
-	driveType = "physical"
-	mode = d.Type
-    } else {
-	driveType = "logical"
-	mode = d.RaidMode
-    }
+	var driveType, mode string
+	if d.Physical {
+		driveType = "physical"
+		mode = d.Type
+	} else {
+		driveType = "logical"
+		mode = d.RaidMode
+	}
 
-    return fmt.Sprintf("%s %s (%s, %s)", driveType, d.Id, mode, convertBytesToHumanReadable(d.Size))
+	return fmt.Sprintf("%s %s (%s, %s)", driveType, d.Id, mode, convertBytesToHumanReadable(d.Size))
 }
 
 func ControllerParse(s string) *Controller {
-    var ctl Controller
+	var ctl Controller
 
-    matched := ctlRx.FindStringSubmatch(s)
+	matched := ctlRx.FindStringSubmatch(s)
 
-    ctl.Name = matched[1]
-    ui, err := strconv.ParseUint(matched[2], 10, 32)
-    if err != nil {
-	panic(err)
-    }
-    ctl.Slot = uint(ui)
-    ctl.Type = matched[3]
-    ctl.SerialNumber = matched[4]
+	ctl.Name = matched[1]
+	ui, err := strconv.ParseUint(matched[2], 10, 32)
+	if err != nil {
+		panic(err)
+	}
+	ctl.Slot = uint(ui)
+	ctl.Type = matched[3]
+	ctl.SerialNumber = matched[4]
 
-    return &ctl
+	return &ctl
 }
 
 func convertHumanReadableToBytes(s string) uint64 {
-    matched := szRx.FindStringSubmatch(s)
-    if len(matched) == 0 {
-	panic("no match for " + s)
-    }
-    n, _ := strconv.ParseFloat(matched[1], 64)
+	matched := szRx.FindStringSubmatch(s)
+	if len(matched) == 0 {
+		panic("no match for " + s)
+	}
+	n, _ := strconv.ParseFloat(matched[1], 64)
 
-    var mul uint64 = 1
-    switch matched[5][0] {
-    case 'E':
-	mul *= 1000
-	fallthrough
-    case 'P':
-	mul *= 1000
-	fallthrough
-    case 'T':
-	mul *= 1000
-	fallthrough
-    case 'G':
-	mul *= 1000
-	fallthrough
-    case 'M':
-	mul *= 1000
-	fallthrough
-    case 'K':
-	mul *= 1000
-    default:
-	panic("Unknown size prefix")
-    }
+	var mul uint64 = 1
+	switch matched[5][0] {
+	case 'E':
+		mul *= 1000
+		fallthrough
+	case 'P':
+		mul *= 1000
+		fallthrough
+	case 'T':
+		mul *= 1000
+		fallthrough
+	case 'G':
+		mul *= 1000
+		fallthrough
+	case 'M':
+		mul *= 1000
+		fallthrough
+	case 'K':
+		mul *= 1000
+	default:
+		panic("Unknown size prefix")
+	}
 
-    return uint64(n * float64(mul))
+	return uint64(n * float64(mul))
 }
 
 func ArrayParse(s string) *Array {
-    var arr Array
+	var arr Array
 
-    matched := arrRx.FindStringSubmatch(s)
-    arr.Id = rune(matched[1][0])
-    arr.Type = matched[2]
-    arr.UnusedSpace = convertHumanReadableToBytes(matched[3])
+	matched := arrRx.FindStringSubmatch(s)
+	arr.Id = rune(matched[1][0])
+	arr.Type = matched[2]
+	arr.UnusedSpace = convertHumanReadableToBytes(matched[3])
 
-    return &arr
+	return &arr
 }
 
 func DriveParse(s string) *Drive {
-    var d Drive
-    if strings.HasPrefix(s, "logicaldrive") {
-	matched := logRx.FindStringSubmatch(s[len("logicaldrive")+1:])
+	var d Drive
+	if strings.HasPrefix(s, "logicaldrive") {
+		matched := logRx.FindStringSubmatch(s[len("logicaldrive")+1:])
 
-	d.Id = matched[1]
-	d.Size = convertHumanReadableToBytes(matched[2])
-	d.RaidMode = matched[3]
-	d.Status = matched[4]
-	d.Physical = false
-    } else if strings.HasPrefix(s, "physicaldrive") {
-	matched := physRx.FindStringSubmatch(s[len("physicaldrive")+1:])
+		d.Id = matched[1]
+		d.Size = convertHumanReadableToBytes(matched[2])
+		d.RaidMode = matched[3]
+		d.Status = matched[4]
+		d.Physical = false
+	} else if strings.HasPrefix(s, "physicaldrive") {
+		matched := physRx.FindStringSubmatch(s[len("physicaldrive")+1:])
 
-	d.Id = matched[1]
-	d.Port = matched[2]
-	ui, err := strconv.ParseUint(matched[3], 10, 32)
-	if err != nil {
-	    panic(err)
+		d.Id = matched[1]
+		d.Port = matched[2]
+		ui, err := strconv.ParseUint(matched[3], 10, 32)
+		if err != nil {
+			panic(err)
+		}
+		d.Box = uint(ui)
+		ui, err = strconv.ParseUint(matched[4], 10, 32)
+		if err != nil {
+			panic(err)
+		}
+		d.Bay = uint(ui)
+		d.Type = matched[5]
+		d.Size = convertHumanReadableToBytes(matched[6])
+		d.Status = matched[7]
+		d.Physical = true
+	} else {
+		panic("cannot determine drive type")
 	}
-	d.Box = uint(ui)
-	ui, err = strconv.ParseUint(matched[4], 10, 32)
-	if err != nil {
-	    panic(err)
-	}
-	d.Bay = uint(ui)
-	d.Type = matched[5]
-	d.Size = convertHumanReadableToBytes(matched[6])
-	d.Status = matched[7]
-	d.Physical = true
-    } else {
-	panic("cannot determine drive type")
-    }
 
-    return &d
+	return &d
 }
 
 func (ctl *Controller) Add(a *Array) {
-    ctl.Arrays = append(ctl.Arrays, *a)
-    ctl.CurrentArray = &ctl.Arrays[len(ctl.Arrays)-1]
+	ctl.Arrays = append(ctl.Arrays, *a)
+	ctl.CurrentArray = &ctl.Arrays[len(ctl.Arrays)-1]
 }
 
 func (arr *Array) Add(d *Drive) {
-    arr.Drives = append(arr.Drives, *d)
+	arr.Drives = append(arr.Drives, *d)
 }
 
-func genmetrics(hpinfo []byte ) [][]string {
-    var (
-	labels [][]string
-    )
-    var currentController *Controller
-    var controllers []*Controller
+func genmetrics(hpinfo []byte) [][]string {
+	var (
+		labels [][]string
+	)
+	var currentController *Controller
+	var controllers []*Controller
 
-    for lineNo, line := range strings.Split(string(hpinfo), "\n") {
-	if len(line) == 0 {
-	    continue
-	}
-
-	// count number of trailing spaces
-	var i int
-	for i = 0; i < len(line); i++ {
-	    if line[i] != ' ' {
-		break
-	    }
-	}
-
-	switch i {
-	case 0:
-	    // parse a controller line
-	    currentController = ControllerParse(line[i:])
-
-	    // create unassigned array
-	    currentController.Arrays = []Array{
-		Array{
-		    Id:   'U',
-		    Type: "unassigned",
-		},
-	    }
-
-	    controllers = append(controllers, currentController)
-	    break
-	case 3:
-	    // Parse only string starting with "array"
-	    if strings.HasPrefix(line[i:], "array") {
-		currentController.Add(ArrayParse(line[i:]))
-	    }
-	case 6:
-	    // add phyisical/logical drive
-	    currentController.CurrentArray.Add(DriveParse(line[i:]))
-	    break
-	default:
-	    panic(fmt.Sprintf("cannot parse line %d with %d trailing spaces:%s", lineNo, i, line))
-
-	}
-    }
-
-    for _, controller := range controllers {
-	for _, array := range controller.Arrays {
-	    for _, drive := range array.Drives {
-		    label := []string{controller.Describe(), array.Describe(), drive.Describe(), drive.Status}
-		    labels = append(labels,label)
+	for lineNo, line := range strings.Split(string(hpinfo), "\n") {
+		if len(line) == 0 {
+			continue
 		}
-	    }
-	}
-    return labels
-    }
 
+		// count number of trailing spaces
+		var i int
+		for i = 0; i < len(line); i++ {
+			if line[i] != ' ' {
+				break
+			}
+		}
+
+		switch i {
+		case 0:
+			// parse a controller line
+			currentController = ControllerParse(line[i:])
+
+			// create unassigned array
+			currentController.Arrays = []Array{
+				Array{
+					Id:   'U',
+					Type: "unassigned",
+				},
+			}
+
+			controllers = append(controllers, currentController)
+			break
+		case 3:
+			// Parse only string starting with "array"
+			if strings.HasPrefix(line[i:], "array") {
+				currentController.Add(ArrayParse(line[i:]))
+			}
+		case 6:
+			// add phyisical/logical drive
+			currentController.CurrentArray.Add(DriveParse(line[i:]))
+			break
+		default:
+			panic(fmt.Sprintf("cannot parse line %d with %d trailing spaces:%s", lineNo, i, line))
+
+		}
+	}
+
+	for _, controller := range controllers {
+		for _, array := range controller.Arrays {
+			for _, drive := range array.Drives {
+				label := []string{controller.Describe(), array.Describe(), drive.Describe(), drive.Status}
+				labels = append(labels, label)
+			}
+		}
+	}
+	return labels
+}
 
 func GetHPInfo() ([]byte, error) {
-    var (
-        hpinfo []byte
-        err error
-    )
-    hpinfo, err = exec.Command(*cmdName, cmdArgs...).Output()
-    return hpinfo, err
+	var (
+		hpinfo []byte
+		err    error
+	)
+	hpinfo, err = exec.Command(*cmdName, cmdArgs...).Output()
+	return hpinfo, err
 }
 
 // prometheus part
 var (
-    hpraidDesc    = prometheus.NewDesc(
-    "hpraid_diskstate",
-    "hpraid disk state",
-    []string{"controller", "array","drive_describe","drive_status"}, nil,
-    )
+	hpraidDesc = prometheus.NewDesc(
+		"hpraid_diskstate",
+		"hpraid disk state",
+		[]string{"controller", "array", "drive_describe", "drive_status"}, nil,
+	)
 )
 
 type collector struct {
 }
 
 func (c collector) Describe(ch chan<- *prometheus.Desc) {
-    ch <- hpraidDesc
+	ch <- hpraidDesc
 }
 
-func (c collector) Collect(ch chan <- prometheus.Metric) {
-    hpinfo, err := GetHPInfo()
-    if err != nil {
-	fmt.Fprintln(os.Stderr, "There was an error in running hpssacli command ", err)
-	ch <- prometheus.MustNewConstMetric(
-	    hpraidDesc,
-	    prometheus.GaugeValue,
-	    0,
-	    "NULL", "NULL", "NULL", "NULL",
-	)
-    }	else {
-	    labels := genmetrics(hpinfo)
-	    for _, label := range labels {
-    	        ch <- prometheus.MustNewConstMetric(
-	    	    hpraidDesc,
-		    prometheus.GaugeValue,
-		    1,
-		    label[0], label[1], label[2], label[3],
-	    )
+func (c collector) Collect(ch chan<- prometheus.Metric) {
+	hpinfo, err := GetHPInfo()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "There was an error in running hpssacli command ", err)
+		ch <- prometheus.MustNewConstMetric(
+			hpraidDesc,
+			prometheus.GaugeValue,
+			0,
+			"NULL", "NULL", "NULL", "NULL",
+		)
+	} else {
+		labels := genmetrics(hpinfo)
+		for _, label := range labels {
+			ch <- prometheus.MustNewConstMetric(
+				hpraidDesc,
+				prometheus.GaugeValue,
+				1,
+				label[0], label[1], label[2], label[3],
+			)
+		}
 	}
-      }
 }
 
 func main() {
-    flag.Parse()
+	flag.Parse()
 
-    registry := prometheus.NewRegistry()
-    collector := collector{}
-    registry.MustRegister(collector)
-    http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(`<html>
-	    <head><title>hpssacli Exporter</title></head>
-	    <body>
-	    <h1>hpssacli Exporter</h1>
-	    <p><a href="/metrics">Metrics</a></p>
-	    </body>
-	    </html>`))
-})
-    log.Fatal(http.ListenAndServe(*port, nil))
+	registry := prometheus.NewRegistry()
+	collector := collector{}
+	registry.MustRegister(collector)
+	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html>
+			<head><title>hpssacli Exporter</title></head>
+			<body>
+			<h1>hpssacli Exporter</h1>
+			<p><a href="/metrics">Metrics</a></p>
+			</body>
+			</html>`))
+	})
+	log.Fatal(http.ListenAndServe(*port, nil))
 }
