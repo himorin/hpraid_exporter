@@ -37,6 +37,15 @@ var (
 	cmdArgs = []string{"ctrl", "all", "show", "config"}
 )
 
+type Parsed struct {
+	Labels       [][]string
+	Controller   []*Controller
+}
+type CtrlStat struct {
+	Id           uint
+	hpRet        []byte
+}
+
 type Controller struct {
 	Name         string
 	Type         string
@@ -71,6 +80,13 @@ var arrRx *regexp.Regexp = regexp.MustCompile("^array\\s+([A-Z])\\s+\\(([^,]+),\
 var szRx *regexp.Regexp = regexp.MustCompile("^\\s*((\\d+)(\\.\\d+)?)\\s+((K|M|G|T)B)?$")
 var logRx *regexp.Regexp = regexp.MustCompile("^(\\d+)\\s+\\(([^,]+),\\s+([^,]+),\\s+([^\\)]+)\\)$")
 var physRx *regexp.Regexp = regexp.MustCompile("^([^\\s]+)\\s+\\(port\\s+([^:]+):box\\s+([^:]+):bay\\s+(\\d+),\\s+([^,]+),\\s+([^,]+),\\s+([^\\)]+)\\)$")
+
+var ctrlstatArgs []string = []string{"ctrl", "slot=", "show"}
+
+var drive_status_id = map[string]float64 {
+	"OK": 0,
+	"undefined": 99,
+}
 
 func (ctl *Controller) Describe() string {
 	return fmt.Sprintf("%s in slot %d", ctl.Name, ctl.Slot)
@@ -222,8 +238,9 @@ func (arr *Array) Add(d *Drive) {
 	arr.Drives = append(arr.Drives, *d)
 }
 
-func genmetrics(hpinfo []byte) [][]string {
+func genmetrics(hpinfo []byte) Parsed {
 	var (
+		ret Parsed
 		labels [][]string
 	)
 	var currentController *Controller
@@ -280,7 +297,9 @@ func genmetrics(hpinfo []byte) [][]string {
 			}
 		}
 	}
-	return labels
+	ret.Labels = labels
+	ret.Controller = controllers
+	return ret
 }
 
 func GetHPInfo() ([]byte, error) {
@@ -290,6 +309,24 @@ func GetHPInfo() ([]byte, error) {
 	)
 	hpinfo, err = exec.Command(*cmdName, cmdArgs...).Output()
 	return hpinfo, err
+}
+
+func GetHPCtrlStatus(ids []uint) ([]CtrlStat) {
+	var (
+		hpinfo []byte
+		err    error
+		ret    []CtrlStat
+	)
+	for _, id := range ids {
+		cargs := ctrlstatArgs
+		cargs[1] += fmt.Sprint(id)
+		hpinfo, err = exec.Command(*cmdName, ctrlstatArgs...).Output()
+		if err == nil {
+			cval := CtrlStat{id, hpinfo}
+			ret = append(ret, cval)
+		}
+	}
+	return ret
 }
 
 // prometheus part
@@ -319,12 +356,21 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 			"NULL", "NULL", "NULL", "NULL",
 		)
 	} else {
-		labels := genmetrics(hpinfo)
+		gm := genmetrics(hpinfo)
+		labels := gm.Labels
 		for _, label := range labels {
+			var cstat = drive_status_id["undefined"]
+			clabel := label[3]
+			if (strings.Index(clabel, ",") > -1) {
+				clabel = clabel[0:strings.Index(clabel, ",")]
+			}
+			if _, ok := drive_status_id[clabel]; ok {
+				cstat = drive_status_id[clabel]
+			}
 			ch <- prometheus.MustNewConstMetric(
 				hpraidDesc,
 				prometheus.GaugeValue,
-				1,
+				cstat,
 				label[0], label[1], label[2], label[3],
 			)
 		}
