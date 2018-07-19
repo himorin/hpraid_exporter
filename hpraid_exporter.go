@@ -41,9 +41,9 @@ type Parsed struct {
 	Labels       [][]string
 	Controller   []*Controller
 }
-type CtrlStat struct {
-	Id           uint
-	hpRet        []byte
+type ArrStat struct {
+	name         string
+	ret          string
 }
 
 type Controller struct {
@@ -82,9 +82,56 @@ var logRx *regexp.Regexp = regexp.MustCompile("^(\\d+)\\s+\\(([^,]+),\\s+([^,]+)
 var physRx *regexp.Regexp = regexp.MustCompile("^([^\\s]+)\\s+\\(port\\s+([^:]+):box\\s+([^:]+):bay\\s+(\\d+),\\s+([^,]+),\\s+([^,]+),\\s+([^\\)]+)\\)$")
 
 var ctrlstatArgs []string = []string{"ctrl", "slot=", "show"}
+var ctrlstatRegexp = map[string]*regexp.Regexp {
+	"status":      regexp.MustCompile("Controller Status: (\\w+)"),
+	"scan":        regexp.MustCompile("Surface Scan Mode: (\\w+)"),
+	"cache":       regexp.MustCompile("Cache Status: (\\w+)"),
+	"cachetotal":  regexp.MustCompile("Total Cache Size: (\\d+) MB"),
+	"cachefree":   regexp.MustCompile("Total Cache Memory Available: (\\d+) MB"),
+	"batcount":    regexp.MustCompile("Battery/Capacitor Count: (\\d+)$"),
+	"batstat":    regexp.MustCompile("Battery/Capacitor Status: (.+)$"),
+}
+var ctrlDesc = map[string]*prometheus.Desc {
+	"status":      prometheus.NewDesc(
+			"hpraid_ctrl_status", "hpraid controller status",
+			[]string{"controller","ctrl_status"}, nil, ),
+	"scan":        prometheus.NewDesc(
+		"hpraid_ctrl_scan", "hpraid controller surface scan mode",
+		[]string{"controller", "scan_mode"}, nil, ),
+	"cache":    prometheus.NewDesc(
+		"hpraid_ctrl_cache", "hpraid controller cache status",
+		[]string{"controller", "cache_status"}, nil, ),
+	"cachetotal":    prometheus.NewDesc(
+		"hpraid_ctrl_cache_total", "hpraid controller cache total size (MB)",
+		[]string{"controller", "cache_total"}, nil, ),
+	"cachefree":    prometheus.NewDesc(
+		"hpraid_ctrl_cache_free", "hpraid controller cache free size (MB)",
+		[]string{"controller", "cache_free"}, nil, ),
+	"battery":    prometheus.NewDesc(
+		"hpraid_ctrl_battery", "hpraid controller battery status",
+		[]string{"controller", "battery_id", "battery_status"}, nil, ),
+}
 
 var drive_status_id = map[string]float64 {
 	"OK": 0,
+	"undefined": 99,
+}
+var ctrlstat_id = map[string]float64 {
+	"OK": 0,
+	"undefined": 99,
+}
+var scan_id = map[string]float64 {
+	"Idle": 0,
+	"undefined": 99,
+}
+var cache_id = map[string]float64 {
+	"OK": 0,
+	"undefined": 99,
+}
+var batstat_id = map[string]float64 {
+	"OK": 0,
+	"Recharging": 1,
+	"Failed (Replace Batteries)": 10,
 	"undefined": 99,
 }
 
@@ -238,6 +285,37 @@ func (arr *Array) Add(d *Drive) {
 	arr.Drives = append(arr.Drives, *d)
 }
 
+func ArrayStatus(id uint) []ArrStat {
+	var (
+		ret []ArrStat
+		hpinfo []byte
+		err    error
+	)
+	cargs := make([]string, len(ctrlstatArgs));
+	copy(cargs, ctrlstatArgs)
+	cargs[1] += fmt.Sprint(id)
+	hpinfo, err = exec.Command(*cmdName, cargs...).Output()
+	if err == nil {
+		for _, line := range strings.Split(string(hpinfo), "\n") {
+			if len(line) == 0 {
+				continue
+			}
+			for name, exp := range ctrlstatRegexp {
+				matched := exp.FindStringSubmatch(line)
+				if (len(matched) < 1) {
+					continue
+				}
+				ret = append(ret, ArrStat{name, matched[1]})
+				break
+			}
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "There was an error in running hpssacli command ", err)
+		fmt.Fprintln(os.Stderr, "output ", string(hpinfo))
+	}
+	return ret
+}
+
 func genmetrics(hpinfo []byte) Parsed {
 	var (
 		ret Parsed
@@ -311,24 +389,6 @@ func GetHPInfo() ([]byte, error) {
 	return hpinfo, err
 }
 
-func GetHPCtrlStatus(ids []uint) ([]CtrlStat) {
-	var (
-		hpinfo []byte
-		err    error
-		ret    []CtrlStat
-	)
-	for _, id := range ids {
-		cargs := ctrlstatArgs
-		cargs[1] += fmt.Sprint(id)
-		hpinfo, err = exec.Command(*cmdName, ctrlstatArgs...).Output()
-		if err == nil {
-			cval := CtrlStat{id, hpinfo}
-			ret = append(ret, cval)
-		}
-	}
-	return ret
-}
-
 // prometheus part
 var (
 	hpraidDesc = prometheus.NewDesc(
@@ -357,8 +417,7 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 		)
 	} else {
 		gm := genmetrics(hpinfo)
-		labels := gm.Labels
-		for _, label := range labels {
+		for _, label := range gm.Labels {
 			var cstat = drive_status_id["undefined"]
 			clabel := label[3]
 			if (strings.Index(clabel, ",") > -1) {
@@ -373,6 +432,55 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 				cstat,
 				label[0], label[1], label[2], label[3],
 			)
+		}
+		for _, ctrl := range gm.Controller {
+			for _, statone := range ArrayStatus(ctrl.Slot) {
+				var cstat float64
+				var lastbat string
+				lastbat = "0"
+				switch statone.name {
+					case "status":
+						if _, ok := ctrlstat_id[statone.ret]; ok {
+							cstat = ctrlstat_id[statone.ret]
+						} else {
+							cstat = ctrlstat_id["undefined"]
+						}
+					case "scan":
+						if _, ok := scan_id[statone.ret]; ok {
+							cstat = scan_id[statone.ret]
+						} else {
+							cstat = scan_id["undefined"]
+						}
+					case "cache":
+						if _, ok := cache_id[statone.ret]; ok {
+							cstat = cache_id[statone.ret]
+						} else {
+							cstat = cache_id["undefined"]
+						}
+					case "cachetotal":
+						cstat, _ = strconv.ParseFloat(statone.ret, 32)
+					case "cachefree":
+						cstat, _ = strconv.ParseFloat(statone.ret, 32)
+					case "batcount":
+						lastbat = statone.ret
+						continue
+					case "batstat":
+						if _, ok := batstat_id[statone.ret]; ok {
+							cstat = batstat_id[statone.ret]
+						} else {
+							cstat = batstat_id["undefined"]
+						}
+						ch <- prometheus.MustNewConstMetric(ctrlDesc["battery"], 
+							prometheus.GaugeValue, cstat, ctrl.Name, lastbat, statone.ret, )
+						continue
+					default:
+						continue
+				}
+				ch <- prometheus.MustNewConstMetric(
+					ctrlDesc[statone.name],
+					prometheus.GaugeValue,
+					cstat, ctrl.Name, statone.ret, )
+			}
 		}
 	}
 }
