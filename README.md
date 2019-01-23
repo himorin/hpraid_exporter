@@ -19,3 +19,16 @@ Usage of ./hpraid_exporter:
 ### Comments
 
 This exporter based on https://github.com/gdm85/hpraidmon utility. I just removed some unnecessary(in my opinion) parts and added code that exposes metrics with prometheus client library.
+
+### Remarks
+
+String output (status) from hpssacli are parsed into prometheus gauge value, 
+but matching is not collected in completed yet. Followings are definitions of 
+pairs in code. 
+
+- drive_status_id : Status of physical disk drive
+- ctrlstat_id : Status of controller
+- scan_id : Status of controller disk scan
+- cache_id : Status of controller cache
+- batstat_id : Status of cache battery
+
